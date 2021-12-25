@@ -187,9 +187,6 @@ pub enum Msaa {
     /// No subsampling
     None = 1,
 
-    /// 2x MSAA
-    X2 = 2,
-
     /// 4x MSAA
     X4 = 4,
 }
