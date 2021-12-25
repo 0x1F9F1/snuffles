@@ -1,6 +1,7 @@
 use std::rc::Rc;
 use std::ops::Range;
 use std::borrow::Cow;
+use std::time::Instant;
 use wgpu::util::{DeviceExt, BufferInitDescriptor};
 use cgmath::{Deg, Rad, Angle, Point3, point3, Vector3, Matrix4};
 use winit::dpi::LogicalSize;
@@ -230,6 +231,9 @@ pub struct Window<EH: EventHandler> {
 
     /// Logical height of the inner part of the window
     height: u32,
+
+    /// Instant of last update
+    last_update_inst: Instant,
 
     /// Device we're using to render with
     device: Device,
@@ -532,6 +536,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
             window,
             width,
             height,
+            last_update_inst: Instant::now(),
             proxy: event_loop.create_proxy(),
             event_loop: Some(event_loop),
             device,
@@ -570,7 +575,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                     eye:     point3(0., 0., 0.),
                     pitch:   Deg(0.),
                     yaw:     Deg(0.),
-                    speed:   1.,
+                    speed:   1000.,
                     panning: false,
                     key_w:   false,
                     key_a:   false,
@@ -1200,10 +1205,15 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 self.render(&mut handler)?;
             }
             Event::MainEventsCleared => {
+                let update_delta = self.last_update_inst.elapsed().as_secs_f32();
+                self.last_update_inst = Instant::now();
+
                 if let CameraState::Flight3d {
                     key_w, key_a, key_s, key_d,
                     ref mut eye, speed, pitch, yaw, ..
                 } = self.camera_state {
+                    let speed = speed * update_delta;
+
                     // Check for movement keypresses
                     if key_w || key_a || key_s || key_d {
                         // Key is pressed, so we have to redraw so we can
@@ -1211,16 +1221,16 @@ impl<EH: 'static + EventHandler> Window<EH> {
 
                         // Determine movement for forwards and strafing
                         let forwards = match (key_w, key_s) {
-                            (true, true)   =>      0.,
+                            (true, true)   =>  0.,
                             (true, false)  =>  speed,
                             (false, true)  => -speed,
-                            (false, false) =>      0.,
+                            (false, false) =>  0.,
                         };
                         let strafe = match (key_a, key_d) {
-                            (true, true)   =>      0.,
+                            (true, true)   =>  0.,
                             (true, false)  =>  speed,
                             (false, true)  => -speed,
-                            (false, false) =>      0.,
+                            (false, false) =>  0.,
                         };
 
                         // Update the camera eye position...
