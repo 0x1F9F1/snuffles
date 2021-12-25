@@ -237,6 +237,9 @@ pub struct Window<EH: EventHandler> {
     /// Surface to draw on when rendering
     surface: Surface,
 
+    /// Configuration for the surface
+    config: SurfaceConfiguration,
+
     /// Queue to use for sending commands to the device
     queue: Queue,
 
@@ -258,23 +261,17 @@ pub struct Window<EH: EventHandler> {
     /// Render pipeline for line strips
     line_pipeline: RenderPipeline,
 
-    /// Output texture
-    output_texture: Texture,
-
-    /// Output texture view
-    output_view: TextureView,
-
-    /// Output depth
-    output_depth: Texture,
-
-    /// Output depth view
-    output_depth_view: TextureView,
-
     /// Scene texture (saved from output on a non-incremental render)
-    scene_texture: Texture,
+    scene_texture: (Texture, TextureView),
 
     /// Scene depth (saved from output on a non-incremental render)
-    scene_depth: Texture,
+    scene_depth: (Texture, TextureView),
+
+    /// Output texture (only for multi-sampling)
+    output_texture: Option<(Texture, TextureView)>,
+
+    /// Output depth
+    output_depth: (Texture, TextureView),
 
     /// A proxy for the event loop so we can send commands from a thread
     proxy: EventLoopProxy<UserEvent>,
@@ -396,11 +393,10 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 Cow::Borrowed(include_str!("shader.wgsl"))),
         });
 
-        // Configure the swap buffers
-        surface.configure(&device, &SurfaceConfiguration {
+        let config = SurfaceConfiguration {
             // Usage for the swap chain. In this case, this is currently the
             // only supported option.
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
 
             // Set the preferred texture format for the swap chain to be what
             // the surface and adapter want.
@@ -420,7 +416,10 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 Vsync::Off => PresentMode::Immediate,
                 Vsync::On  => PresentMode::Fifo,
             },
-        });
+        };
+
+        // Configure the swap buffers
+        surface.configure(&device, &config);
 
         // Create the camera buffer for supplying the camera uniform to the
         // shader
@@ -483,17 +482,33 @@ impl<EH: 'static + EventHandler> Window<EH> {
             ],
         });
 
-        // Create output
-        let (output_texture, output_view, output_depth, output_depth_view) =
-                Self::create_texture_pair(
-            &mut device, width, height, msaa_level as u32, swapchain_format
-        );
+        let msaa_level = msaa_level as u32;
 
-        // Create scene save buffer
-        let (scene_texture, _scene_view, scene_depth, _scene_depth_view) =
-                Self::create_texture_pair(
-            &mut device, width, height, msaa_level as u32, swapchain_format
-        );
+        // Create scene texture and depth
+        let scene_texture = Self::create_texture(
+            &mut device, width, height, swapchain_format,
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            msaa_level);
+
+        let scene_depth =
+            Self::create_texture(
+            &mut device, width, height, TextureFormat::Depth32Float,
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            msaa_level);
+
+        // Create scene texture and depth
+        let output_texture = (msaa_level != 1).then(|| {
+            Self::create_texture(
+            &mut device, width, height, swapchain_format,
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+            msaa_level)
+        });
+
+        let output_depth =
+            Self::create_texture(
+            &mut device, width, height, TextureFormat::Depth32Float,
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+            msaa_level);
 
         // Create line pipeline
         let line_pipeline = Self::create_render_pipeline(
@@ -502,7 +517,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
             PrimitiveTopology::LineList,
             &shader,
             swapchain_format,
-            msaa_level as u32);
+            msaa_level);
 
         // Create triangle pipeline
         let triangle_pipeline = Self::create_render_pipeline(
@@ -511,7 +526,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
             PrimitiveTopology::TriangleList,
             &shader,
             swapchain_format,
-            msaa_level as u32);
+            msaa_level);
 
         // Create the window
         let mut ret = Self {
@@ -523,17 +538,16 @@ impl<EH: 'static + EventHandler> Window<EH> {
             event_loop: Some(event_loop),
             device,
             surface,
+            config,
             queue,
             incremental: false,
             camera_state: CameraState::None,
             camera_bind_group,
             camera_buffer,
+            output_texture,
+            output_depth,
             scene_texture,
             scene_depth,
-            output_texture,
-            output_view,
-            output_depth,
-            output_depth_view,
             line_pipeline,
             triangle_pipeline,
             persist_tri_commands: Vec::new(),
@@ -807,7 +821,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
     }
 
     /// Create a texture with a given width, height, format, usages, and MSAA
-    fn create_texture_msaa(device: &mut Device,
+    fn create_texture(device: &mut Device,
             width: u32, height: u32, format: TextureFormat,
             usage: TextureUsages, msaa_level: u32) -> (Texture, TextureView) {
         // Create the texture
@@ -832,35 +846,6 @@ impl<EH: 'static + EventHandler> Window<EH> {
 
         // Return the result
         (texture, view)
-    }
-
-    /// Create a pair of color textures and depth textures
-    fn create_texture_pair(device: &mut Device, width: u32, height: u32,
-            msaa_level: u32, swapchain_format: TextureFormat)
-                -> (Texture, TextureView, Texture, TextureView) {
-        // Create the output texture
-        let (texture, texture_view) = Self::create_texture_msaa(
-            device,
-            width,
-            height,
-            swapchain_format,
-            TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING |
-            TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
-            msaa_level);
-
-        // Create depth texture
-        let (depth, depth_view) =
-            Self::create_texture_msaa(
-            device,
-            width,
-            height,
-            TextureFormat::Depth32Float,
-            TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING |
-            TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
-            msaa_level);
-
-        // Return the color and depth textures
-        (texture, texture_view, depth, depth_view)
     }
 
     /// Handle the events from the event loop
@@ -1009,41 +994,27 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 handler.render(self, self.incremental);
 
                 // Get the next available surface in the swap chain
-                let frame = self.surface
-                    .get_current_texture()
-                    .map_err(Error::GetSurfaceTexture)?;
+                let frame = self.surface.get_current_texture().or_else(|_| {
+                    self.surface.configure(&self.device, &self.config);
+                    self.surface.get_current_texture()
+                }).map_err(Error::GetSurfaceTexture)?;
 
-                // Create a view of the texture used in the frame
-                let view = frame.texture
-                    .create_view(&TextureViewDescriptor::default());
+                let frame_texture = (&frame.texture, &frame.texture
+                    .create_view(&TextureViewDescriptor::default()));
 
                 // Create an encoder for a series of GPU operations
                 let mut encoder = self.device.create_command_encoder(
                     &CommandEncoderDescriptor::default());
 
+                let (render_texture, resolve_target) = if let Some((output_texture, output_view)) = &self.output_texture {
+                    ((output_texture, output_view), Some(frame_texture.1))
+                } else {
+                    (frame_texture, None)
+                };
+
                 // If we're doing an incremental render, copy the last rendered
                 // scene as the base for the new rendering
-                if self.incremental {
-                    encoder.copy_texture_to_texture(
-                        self.scene_texture.as_image_copy(),
-                        self.output_texture.as_image_copy(),
-                        Extent3d {
-                            width:  self.width,
-                            height: self.height,
-                            depth_or_array_layers: 1
-                        });
-
-                    encoder.copy_texture_to_texture(
-                        self.scene_depth.as_image_copy(),
-                        self.output_depth.as_image_copy(),
-                        Extent3d {
-                            width:  self.width,
-                            height: self.height,
-                            depth_or_array_layers: 1
-                        });
-                }
-
-                {
+                if !self.incremental {
                     // Start a render pass
                     let mut render_pass = encoder.begin_render_pass(
                         &RenderPassDescriptor {
@@ -1054,19 +1025,15 @@ impl<EH: 'static + EventHandler> Window<EH> {
                             color_attachments: &[RenderPassColorAttachment {
                                 // Draw either to the MSAA buffer or the view,
                                 // depending on if MSAA is enabled
-                                view: &self.output_view,
+                                view: &self.scene_texture.1,
 
                                 // Actual screen to render to
-                                resolve_target: Some(&view),
+                                resolve_target: None,
 
                                 // Clear the screen to black at the start of
                                 // the rendering pass
                                 ops: Operations {
-                                    load: if !self.incremental {
-                                        LoadOp::Clear(Color::BLACK)
-                                    } else {
-                                        LoadOp::Load
-                                    },
+                                    load: LoadOp::Clear(Color::BLACK),
                                     store: true,
                                 },
                             }],
@@ -1075,17 +1042,13 @@ impl<EH: 'static + EventHandler> Window<EH> {
                             depth_stencil_attachment: Some(
                                     RenderPassDepthStencilAttachment {
                                 // Depth buffer
-                                view: &self.output_depth_view,
+                                view: &self.scene_depth.1,
 
-                                // Reset the depth buffer to `1.0` for all
+                                // Reset the depth buffer to `0.0` for all
                                 // values at the start of the rendering pass
                                 depth_ops: Some(Operations {
-                                    // Clear to 1.0
-                                    load: if !self.incremental {
-                                        LoadOp::Clear(0.0)
-                                    } else {
-                                        LoadOp::Load
-                                    },
+                                    // Clear to 0.0
+                                    load: LoadOp::Clear(0.0),
                                     store: true,
                                 }),
 
@@ -1125,10 +1088,9 @@ impl<EH: 'static + EventHandler> Window<EH> {
                     }
                 }
 
-                // Save the rendering
                 encoder.copy_texture_to_texture(
-                    self.output_texture.as_image_copy(),
-                    self.scene_texture.as_image_copy(),
+                    self.scene_texture.0.as_image_copy(),
+                    render_texture.0.as_image_copy(),
                     Extent3d {
                         width:  self.width,
                         height: self.height,
@@ -1136,8 +1098,8 @@ impl<EH: 'static + EventHandler> Window<EH> {
                     });
 
                 encoder.copy_texture_to_texture(
-                    self.output_depth.as_image_copy(),
-                    self.scene_depth.as_image_copy(),
+                    self.scene_depth.0.as_image_copy(),
+                    self.output_depth.0.as_image_copy(),
                     Extent3d {
                         width:  self.width,
                         height: self.height,
@@ -1155,10 +1117,10 @@ impl<EH: 'static + EventHandler> Window<EH> {
                             color_attachments: &[RenderPassColorAttachment {
                                 // Draw either to the MSAA buffer or the view,
                                 // depending on if MSAA is enabled
-                                view: &self.output_view,
+                                view: &render_texture.1,
 
                                 // Actual screen to render to
-                                resolve_target: Some(&view),
+                                resolve_target: resolve_target,
 
                                 // Don't clear color data
                                 ops: Operations {
@@ -1171,7 +1133,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                             depth_stencil_attachment: Some(
                                     RenderPassDepthStencilAttachment {
                                 // Depth buffer
-                                view: &self.output_depth_view,
+                                view: &self.output_depth.1,
 
                                 // Reset the depth buffer to `1.0` for all
                                 // values at the start of the rendering pass

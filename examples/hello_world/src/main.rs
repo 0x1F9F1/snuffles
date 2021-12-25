@@ -169,7 +169,7 @@ impl EventHandler for Handler {
 }
 
 fn main() {
-    Window::<Handler>::new("Hello world", 1440, 900, Msaa::X4, 
+    Window::<Handler>::new("Hello world", 1440, 900, Msaa::X4,
         if BENCHMARK_MODE { Vsync::Off } else { Vsync::On })
         .expect("Failed to create window")
         .camera_mode(CameraMode::Flight3d)
