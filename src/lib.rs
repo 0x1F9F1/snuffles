@@ -22,6 +22,10 @@ type UserEvent = bool;
 /// Wrapper type around [`Error`]
 type Result<T> = std::result::Result<T, Error>;
 
+/// Should rendering be based on RedrawRequested or MainEventsCleared
+/// On Windows, Vsync + RedrawRequested seems to limit the FPS to 60
+const USE_REDRAW_REQUEST: bool = false;
+
 /// Error statuses
 #[derive(Debug)]
 pub enum Error {
@@ -575,7 +579,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                     eye:     point3(0., 0., 0.),
                     pitch:   Deg(0.),
                     yaw:     Deg(0.),
-                    speed:   1000.,
+                    speed:   250.,
                     panning: false,
                     key_w:   false,
                     key_a:   false,
@@ -662,8 +666,10 @@ impl<EH: 'static + EventHandler> Window<EH> {
         // non-incremental
         self.incremental &= incremental;
 
-        // Request the redraw!
-        // self.window.request_redraw();
+        if USE_REDRAW_REQUEST {
+            // Request the redraw!
+            self.window.request_redraw();
+        }
     }
 
     /// Create a new vertex buffer with given `data`
@@ -1063,10 +1069,6 @@ impl<EH: 'static + EventHandler> Window<EH> {
     /// Handle the events from the event loop
     fn handle_event(&mut self, event: Event<UserEvent>,
             control_flow: &mut ControlFlow) -> Result<()> {
-        // ControlFlow::Wait pauses the event loop if no events are
-        // available to process.  This is ideal for non-game applications
-        // that only update in response to user input, and uses
-        // significantly less power/CPU time than ControlFlow::Poll.
         *control_flow = ControlFlow::Poll;
 
         // Get the handler
@@ -1259,9 +1261,13 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 }
 
                 // Check if we should schedule another frame for drawing
-                // handler.should_redraw(self);
+                handler.should_redraw(self);
 
-                self.render(&mut handler)?;
+                if !USE_REDRAW_REQUEST {
+                    // Always render, relying on vsync instead of RedrawRequested to reduce CPU usage
+                    // Vsync+RedrawRequested limits FPS to ~60 on Windows
+                    self.render(&mut handler)?;
+                }
             }
             Event::UserEvent(incremental) => {
                 // Got a remote request to redraw the screen

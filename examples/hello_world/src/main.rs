@@ -67,7 +67,7 @@ fn player_worker(timeline: Arc<Timeline>, redraw_trigger: RedrawTrigger) {
         timeline.tail.store(new as u32 * 2, Ordering::Relaxed);
 
         // Redraw
-        redraw_trigger.request_redraw(false).unwrap();
+        redraw_trigger.request_redraw(true).unwrap();
 
         // Sleepy time
         std::thread::sleep(Duration::from_millis(10));
@@ -139,9 +139,9 @@ impl EventHandler for Handler {
     }
 
     fn should_redraw(&mut self, window: &mut Window<Self>) {
-        // Always request an incremental redraw for FPS benchmark
+        // Always request a full redraw for FPS benchmark
         if BENCHMARK_MODE {
-            window.request_redraw(true);
+            window.request_redraw(false);
         }
     }
 
