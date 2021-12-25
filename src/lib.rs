@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::ops::Range;
 use std::borrow::Cow;
 use wgpu::util::{DeviceExt, BufferInitDescriptor};
-use cgmath::{Deg, Angle, Point3, point3, Vector3, perspective, Matrix4};
+use cgmath::{Deg, Rad, Angle, Point3, point3, Vector3, Matrix4};
 use winit::dpi::LogicalSize;
 use winit::event::{Event, WindowEvent, VirtualKeyCode, ElementState};
 use winit::event::MouseButton;
@@ -290,6 +290,19 @@ pub struct Window<EH: EventHandler> {
 
     /// Queued draw commands for temporary lines
     line_commands: Vec<(Rc<Buffer>, Range<u32>)>,
+}
+
+/// Create an infinite reversed-z perspective projection
+pub fn infinite_reversed_perspective(fovy: impl Into<Rad<f32>>, aspect: f32, znear: f32) -> Matrix4<f32> {
+    let h = 1.0 / (fovy.into() * 0.5).tan();
+    let w = h / aspect;
+
+    Matrix4::new(
+        w,   0.0, 0.0,   0.0,
+        0.0,  h,  0.0,   0.0,
+        0.0, 0.0, 0.0,  -1.0,
+        0.0, 0.0, znear, 0.0
+    )
 }
 
 impl<EH: 'static + EventHandler> Window<EH> {
@@ -604,10 +617,9 @@ impl<EH: 'static + EventHandler> Window<EH> {
         // Create a look_to view matrix based on the pitch and yaw
         let view = Matrix4::look_to_rh(eye, direction, Vector3::unit_y());
 
-        // Create a perspective with 45 degree FoV and a znear and zfar of
-        // 1 and 10000
-        let proj = perspective(Deg(45.),
-            self.width as f32 / self.height as f32, 1., 10000.);
+        // Create a perspective with 45 degree FoV and a znear of 1
+        let proj = infinite_reversed_perspective(Deg(45.),
+            self.width as f32 / self.height as f32, 1.);
 
         // Create the uniform from the projection and view
         let camera_uniform = proj * view;
@@ -772,7 +784,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 depth_write_enabled: true,
 
                 // Depth comparison function
-                depth_compare: CompareFunction::Less,
+                depth_compare: CompareFunction::Greater,
 
                 // Stencil
                 stencil: StencilState::default(),
@@ -1070,7 +1082,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                                 depth_ops: Some(Operations {
                                     // Clear to 1.0
                                     load: if !self.incremental {
-                                        LoadOp::Clear(1.0)
+                                        LoadOp::Clear(0.0)
                                     } else {
                                         LoadOp::Load
                                     },
