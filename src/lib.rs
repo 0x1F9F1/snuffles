@@ -496,13 +496,11 @@ impl<EH: 'static + EventHandler> Window<EH> {
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             msaa_level);
 
-        // Create scene texture and depth
-        let output_texture = (msaa_level != 1).then(|| {
-            Self::create_texture(
+        // Create output texture (only when MSAA is enabled) and depth
+        let output_texture = (msaa_level != 1).then(|| Self::create_texture(
             &mut device, width, height, swapchain_format,
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
-            msaa_level)
-        });
+            msaa_level));
 
         let output_depth =
             Self::create_texture(
