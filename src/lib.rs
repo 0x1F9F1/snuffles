@@ -660,7 +660,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
         self.incremental &= incremental;
 
         // Request the redraw!
-        self.window.request_redraw();
+        // self.window.request_redraw();
     }
 
     /// Create a new vertex buffer with given `data`
@@ -848,6 +848,215 @@ impl<EH: 'static + EventHandler> Window<EH> {
         (texture, view)
     }
 
+    fn render(&mut self, handler: &mut EH) -> Result<()> {
+        // Notify about the frame
+        handler.render(self, self.incremental);
+
+        // Get the next available surface in the swap chain
+        let frame = self.surface.get_current_texture().or_else(|_| {
+            self.surface.configure(&self.device, &self.config);
+            self.surface.get_current_texture()
+        }).map_err(Error::GetSurfaceTexture)?;
+
+        let frame_texture = (&frame.texture, &frame.texture
+            .create_view(&TextureViewDescriptor::default()));
+
+        // Create an encoder for a series of GPU operations
+        let mut encoder = self.device.create_command_encoder(
+            &CommandEncoderDescriptor::default());
+
+        let (render_texture, resolve_target) = if let Some((output_texture, output_view)) = &self.output_texture {
+            ((output_texture, output_view), Some(frame_texture.1))
+        } else {
+            (frame_texture, None)
+        };
+
+        // If we're doing an incremental render, copy the last rendered
+        // scene as the base for the new rendering
+        if !self.incremental {
+            // Start a render pass
+            let mut render_pass = encoder.begin_render_pass(
+                &RenderPassDescriptor {
+                    // Debug label
+                    label: None,
+
+                    // Description of the output color buffer
+                    color_attachments: &[RenderPassColorAttachment {
+                        // Draw either to the MSAA buffer or the view,
+                        // depending on if MSAA is enabled
+                        view: &self.scene_texture.1,
+
+                        // Actual screen to render to
+                        resolve_target: None,
+
+                        // Clear the screen to black at the start of
+                        // the rendering pass
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::BLACK),
+                            store: true,
+                        },
+                    }],
+
+                    // Description of the depth buffer
+                    depth_stencil_attachment: Some(
+                            RenderPassDepthStencilAttachment {
+                        // Depth buffer
+                        view: &self.scene_depth.1,
+
+                        // Reset the depth buffer to `0.0` for all
+                        // values at the start of the rendering pass
+                        depth_ops: Some(Operations {
+                            // Clear to 0.0
+                            load: LoadOp::Clear(0.0),
+                            store: true,
+                        }),
+
+                        // Operations to perform on the stencil
+                        stencil_ops: None,
+                    }),
+                });
+
+            // Bind the camera
+            render_pass.set_bind_group(
+                0, &self.camera_bind_group, &[]);
+
+            // Use the triangle pipeline
+            render_pass.set_pipeline(&self.triangle_pipeline);
+
+            // Render persistant data
+            for (buffer, range) in &self.persist_tri_commands {
+                // Bind the vertex buffer
+                render_pass
+                    .set_vertex_buffer(0, buffer.slice(..));
+
+                // Draw it!
+                render_pass.draw(range.clone(), 0..1);
+            }
+
+            // Use the line pipeline
+            render_pass.set_pipeline(&self.line_pipeline);
+
+            // Render persistant data
+            for (buffer, range) in &self.persist_line_commands {
+                // Bind the vertex buffer
+                render_pass
+                    .set_vertex_buffer(0, buffer.slice(..));
+
+                // Draw it!
+                render_pass.draw(range.clone(), 0..1);
+            }
+        }
+
+        encoder.copy_texture_to_texture(
+            self.scene_texture.0.as_image_copy(),
+            render_texture.0.as_image_copy(),
+            Extent3d {
+                width:  self.width,
+                height: self.height,
+                depth_or_array_layers: 1
+            });
+
+        encoder.copy_texture_to_texture(
+            self.scene_depth.0.as_image_copy(),
+            self.output_depth.0.as_image_copy(),
+            Extent3d {
+                width:  self.width,
+                height: self.height,
+                depth_or_array_layers: 1
+            });
+
+        {
+            // Start a render pass
+            let mut render_pass = encoder.begin_render_pass(
+                &RenderPassDescriptor {
+                    // Debug label
+                    label: None,
+
+                    // Description of the output color buffer
+                    color_attachments: &[RenderPassColorAttachment {
+                        // Draw either to the MSAA buffer or the view,
+                        // depending on if MSAA is enabled
+                        view: &render_texture.1,
+
+                        // Actual screen to render to
+                        resolve_target: resolve_target,
+
+                        // Don't clear color data
+                        ops: Operations {
+                            load:  LoadOp::Load,
+                            store: true,
+                        },
+                    }],
+
+                    // Description of the depth buffer
+                    depth_stencil_attachment: Some(
+                            RenderPassDepthStencilAttachment {
+                        // Depth buffer
+                        view: &self.output_depth.1,
+
+                        // Reset the depth buffer to `1.0` for all
+                        // values at the start of the rendering pass
+                        depth_ops: Some(Operations {
+                            // Don't clear depth buffer
+                            load:  LoadOp::Load,
+                            store: true,
+                        }),
+
+                        // Operations to perform on the stencil
+                        stencil_ops: None,
+                    }),
+                });
+
+            // Bind the camera
+            render_pass.set_bind_group(
+                0, &self.camera_bind_group, &[]);
+
+            // Use the triangle pipeline
+            render_pass.set_pipeline(&self.triangle_pipeline);
+
+            // Render persistant data
+            for (buffer, range) in &self.tri_commands {
+                // Bind the vertex buffer
+                render_pass
+                    .set_vertex_buffer(0, buffer.slice(..));
+
+                // Draw it!
+                render_pass.draw(range.clone(), 0..1);
+            }
+
+            // Use the line pipeline
+            render_pass.set_pipeline(&self.line_pipeline);
+
+            // Render persistant data
+            for (buffer, range) in &self.line_commands {
+                // Bind the vertex buffer
+                render_pass
+                    .set_vertex_buffer(0, buffer.slice(..));
+
+                // Draw it!
+                render_pass.draw(range.clone(), 0..1);
+            }
+        }
+
+        // Done with commands, discard them
+        self.persist_tri_commands.clear();
+        self.tri_commands.clear();
+        self.persist_line_commands.clear();
+        self.line_commands.clear();
+
+        // Finalize the encoder and submit the buffer for execution
+        self.queue.submit(Some(encoder.finish()));
+
+        // Present the frame to the output surface
+        frame.present();
+
+        // Now that the frame was drawn, we can go back to incremental
+        // mode
+        self.incremental = true;
+
+        Ok(())
+    }
+
     /// Handle the events from the event loop
     fn handle_event(&mut self, event: Event<UserEvent>,
             control_flow: &mut ControlFlow) -> Result<()> {
@@ -855,7 +1064,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
         // available to process.  This is ideal for non-game applications
         // that only update in response to user input, and uses
         // significantly less power/CPU time than ControlFlow::Poll.
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::Poll;
 
         // Get the handler
         let mut handler = self.handler.take().unwrap();
@@ -990,210 +1199,7 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 }
             }
             Event::RedrawRequested(_) => {
-                // Notify about the frame
-                handler.render(self, self.incremental);
-
-                // Get the next available surface in the swap chain
-                let frame = self.surface.get_current_texture().or_else(|_| {
-                    self.surface.configure(&self.device, &self.config);
-                    self.surface.get_current_texture()
-                }).map_err(Error::GetSurfaceTexture)?;
-
-                let frame_texture = (&frame.texture, &frame.texture
-                    .create_view(&TextureViewDescriptor::default()));
-
-                // Create an encoder for a series of GPU operations
-                let mut encoder = self.device.create_command_encoder(
-                    &CommandEncoderDescriptor::default());
-
-                let (render_texture, resolve_target) = if let Some((output_texture, output_view)) = &self.output_texture {
-                    ((output_texture, output_view), Some(frame_texture.1))
-                } else {
-                    (frame_texture, None)
-                };
-
-                // If we're doing an incremental render, copy the last rendered
-                // scene as the base for the new rendering
-                if !self.incremental {
-                    // Start a render pass
-                    let mut render_pass = encoder.begin_render_pass(
-                        &RenderPassDescriptor {
-                            // Debug label
-                            label: None,
-
-                            // Description of the output color buffer
-                            color_attachments: &[RenderPassColorAttachment {
-                                // Draw either to the MSAA buffer or the view,
-                                // depending on if MSAA is enabled
-                                view: &self.scene_texture.1,
-
-                                // Actual screen to render to
-                                resolve_target: None,
-
-                                // Clear the screen to black at the start of
-                                // the rendering pass
-                                ops: Operations {
-                                    load: LoadOp::Clear(Color::BLACK),
-                                    store: true,
-                                },
-                            }],
-
-                            // Description of the depth buffer
-                            depth_stencil_attachment: Some(
-                                    RenderPassDepthStencilAttachment {
-                                // Depth buffer
-                                view: &self.scene_depth.1,
-
-                                // Reset the depth buffer to `0.0` for all
-                                // values at the start of the rendering pass
-                                depth_ops: Some(Operations {
-                                    // Clear to 0.0
-                                    load: LoadOp::Clear(0.0),
-                                    store: true,
-                                }),
-
-                                // Operations to perform on the stencil
-                                stencil_ops: None,
-                            }),
-                        });
-
-                    // Bind the camera
-                    render_pass.set_bind_group(
-                        0, &self.camera_bind_group, &[]);
-
-                    // Use the triangle pipeline
-                    render_pass.set_pipeline(&self.triangle_pipeline);
-
-                    // Render persistant data
-                    for (buffer, range) in &self.persist_tri_commands {
-                        // Bind the vertex buffer
-                        render_pass
-                            .set_vertex_buffer(0, buffer.slice(..));
-
-                        // Draw it!
-                        render_pass.draw(range.clone(), 0..1);
-                    }
-
-                    // Use the line pipeline
-                    render_pass.set_pipeline(&self.line_pipeline);
-
-                    // Render persistant data
-                    for (buffer, range) in &self.persist_line_commands {
-                        // Bind the vertex buffer
-                        render_pass
-                            .set_vertex_buffer(0, buffer.slice(..));
-
-                        // Draw it!
-                        render_pass.draw(range.clone(), 0..1);
-                    }
-                }
-
-                encoder.copy_texture_to_texture(
-                    self.scene_texture.0.as_image_copy(),
-                    render_texture.0.as_image_copy(),
-                    Extent3d {
-                        width:  self.width,
-                        height: self.height,
-                        depth_or_array_layers: 1
-                    });
-
-                encoder.copy_texture_to_texture(
-                    self.scene_depth.0.as_image_copy(),
-                    self.output_depth.0.as_image_copy(),
-                    Extent3d {
-                        width:  self.width,
-                        height: self.height,
-                        depth_or_array_layers: 1
-                    });
-
-                {
-                    // Start a render pass
-                    let mut render_pass = encoder.begin_render_pass(
-                        &RenderPassDescriptor {
-                            // Debug label
-                            label: None,
-
-                            // Description of the output color buffer
-                            color_attachments: &[RenderPassColorAttachment {
-                                // Draw either to the MSAA buffer or the view,
-                                // depending on if MSAA is enabled
-                                view: &render_texture.1,
-
-                                // Actual screen to render to
-                                resolve_target: resolve_target,
-
-                                // Don't clear color data
-                                ops: Operations {
-                                    load:  LoadOp::Load,
-                                    store: true,
-                                },
-                            }],
-
-                            // Description of the depth buffer
-                            depth_stencil_attachment: Some(
-                                    RenderPassDepthStencilAttachment {
-                                // Depth buffer
-                                view: &self.output_depth.1,
-
-                                // Reset the depth buffer to `1.0` for all
-                                // values at the start of the rendering pass
-                                depth_ops: Some(Operations {
-                                    // Don't clear depth buffer
-                                    load:  LoadOp::Load,
-                                    store: true,
-                                }),
-
-                                // Operations to perform on the stencil
-                                stencil_ops: None,
-                            }),
-                        });
-
-                    // Bind the camera
-                    render_pass.set_bind_group(
-                        0, &self.camera_bind_group, &[]);
-
-                    // Use the triangle pipeline
-                    render_pass.set_pipeline(&self.triangle_pipeline);
-
-                    // Render persistant data
-                    for (buffer, range) in &self.tri_commands {
-                        // Bind the vertex buffer
-                        render_pass
-                            .set_vertex_buffer(0, buffer.slice(..));
-
-                        // Draw it!
-                        render_pass.draw(range.clone(), 0..1);
-                    }
-
-                    // Use the line pipeline
-                    render_pass.set_pipeline(&self.line_pipeline);
-
-                    // Render persistant data
-                    for (buffer, range) in &self.line_commands {
-                        // Bind the vertex buffer
-                        render_pass
-                            .set_vertex_buffer(0, buffer.slice(..));
-
-                        // Draw it!
-                        render_pass.draw(range.clone(), 0..1);
-                    }
-                }
-
-                // Done with commands, discard them
-                self.persist_tri_commands.clear();
-                self.tri_commands.clear();
-                self.persist_line_commands.clear();
-                self.line_commands.clear();
-
-                // Finalize the encoder and submit the buffer for execution
-                self.queue.submit(Some(encoder.finish()));
-
-                // Present the frame to the output surface
-                frame.present();
-
-                // Now that the frame was drawn, we can go back to incremental
-                // mode
-                self.incremental = true;
+                self.render(&mut handler)?;
             }
             Event::MainEventsCleared => {
                 if let CameraState::Flight3d {
@@ -1245,7 +1251,9 @@ impl<EH: 'static + EventHandler> Window<EH> {
                 }
 
                 // Check if we should schedule another frame for drawing
-                handler.should_redraw(self);
+                // handler.should_redraw(self);
+
+                self.render(&mut handler)?;
             }
             Event::UserEvent(incremental) => {
                 // Got a remote request to redraw the screen
